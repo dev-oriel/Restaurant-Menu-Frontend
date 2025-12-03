@@ -1,20 +1,16 @@
-// frontend/src/components/Menu.jsx
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 import clsx from "clsx";
 
 /**
- * ENV:
- * REACT_APP_API_BASE -> e.g. http://localhost:5000
- *
- * Notes:
- * - Ensure TailwindCSS is installed and configured.
- * - Install clsx for conditional classes: `npm i clsx`
+ * FIX: Using import.meta.env for Vite environment variables
+ * VITE_API_URL -> http://localhost:5000/api
+ * VITE_SOCKET_URL -> http://localhost:5000
  */
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
-const SOCKET_PATH = `${API_BASE.replace(/^http/, "ws")}`;
+const API_URL_BASE = import.meta.env.VITE_API_URL; // e.g., http://localhost:5000/api
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL; // e.g., http://localhost:5000
 
 // Simple phone validator for Kenyan numbers.
 // Accepts: 07xxxxxxxx, 2547xxxxxxxx, +2547xxxxxxxx
@@ -47,7 +43,8 @@ export default function Menu() {
 
   // Socket: create once and clean up
   useEffect(() => {
-    const socket = io(API_BASE, {
+    // FIX: Use SOCKET_URL
+    const socket = io(SOCKET_URL, {
       transports: ["websocket"],
       autoConnect: true,
     });
@@ -56,13 +53,25 @@ export default function Menu() {
       console.warn("Socket connect error:", err?.message || err);
     });
 
-    socket.on("order_update", (data) => {
-      // Expecting { type: "PAYMENT_SUCCESS"|"PAYMENT_FAILED", orderId }
-      if (data?.orderId && data.orderId === orderId) {
-        if (data.type === "PAYMENT_SUCCESS") {
+    // NOTE: This assumes the backend is set up to join a room via socket.emit("join_order", orderId)
+    // The previous implementation in Checkout.jsx handled this, but this self-contained Menu component
+    // needs to ensure the socket is listening for the correct order updates.
+    if (orderId) {
+      socket.emit("join_order", orderId);
+      console.log(`Socket joining room for order: ${orderId}`);
+    }
+
+    // The backend `mpesaController.js` emits 'payment_status' to the order room, let's listen for that:
+    // This is a refinement based on your actual backend code logic (which uses payment_status)
+    socket.on("payment_status", (data) => {
+      // Check if the update relates to the current active order
+      if (orderId && data?.order?._id === orderId) {
+        if (data.status === "PAID") {
           setStatus("paid");
           setMessage("Payment confirmed — preparing your order.");
-        } else if (data.type === "PAYMENT_FAILED") {
+          // Clear cart only AFTER payment is confirmed
+          setCart([]);
+        } else if (data.status === "FAILED") {
           setStatus("failed");
           setMessage("Payment failed. Please try again.");
         }
@@ -70,11 +79,11 @@ export default function Menu() {
     });
 
     return () => {
-      socket.off("order_update");
+      socket.off("payment_status");
       socket.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderId]); // keep orderId in deps so correct order updates match
+  }, [orderId]);
 
   // Fetch menu
   useEffect(() => {
@@ -82,8 +91,9 @@ export default function Menu() {
     setLoading(true);
     setFetchError(null);
 
+    // FIX: Use API_URL_BASE
     axios
-      .get(`${API_BASE}/api/menu`)
+      .get(`${API_URL_BASE}/menu`)
       .then((res) => {
         if (cancelled) return;
         setMenu(Array.isArray(res.data) ? res.data : []);
@@ -101,8 +111,9 @@ export default function Menu() {
 
   // Derived totals
   const totals = useMemo(() => {
+    // NOTE: VAT calculation is included here but ensure the backend matches this logic.
     const subtotal = cart.reduce((acc, it) => acc + it.price * it.quantity, 0);
-    const vat = Math.round(subtotal * 0.16); // example 16% VAT; change as needed
+    const vat = Math.round(subtotal * 0.16);
     const total = subtotal + vat;
     return { subtotal, vat, total };
   }, [cart]);
@@ -113,7 +124,17 @@ export default function Menu() {
       setCart((prev) => {
         const idx = prev.findIndex((p) => p._id === item._id);
         if (idx === -1) {
-          return [...prev, { ...item, quantity: 1 }];
+          // Use properties expected by CartContext and backend Order model
+          return [
+            ...prev,
+            {
+              _id: item._id,
+              name: item.name,
+              price: item.price,
+              image: item.image,
+              quantity: 1,
+            },
+          ];
         }
         // increment existing
         const next = [...prev];
@@ -154,38 +175,48 @@ export default function Menu() {
       setStatus("processing");
       setMessage("Initiating payment... Check your phone for the STK prompt.");
 
-      const payload = {
+      // 1. Create Order in DB (This payload must match backend/controllers/orderController.js)
+      const orderPayload = {
         tableNumber: table,
-        items: cart.map((i) => ({
-          id: i._id,
-          name: i.name,
-          price: i.price,
-          quantity: i.quantity,
+        customerPhone: phone.replace(/\s+/g, ""),
+        orderItems: cart.map((item) => ({
+          product: item._id, // Use 'product' as ref ID for Mongoose
+          name: item.name,
+          qty: item.quantity, // Use 'qty' as expected by Order model
+          price: item.price,
         })),
-        subtotal: totals.subtotal,
-        vat: totals.vat,
-        totalAmount: totals.total,
-        phoneNumber: phone.replace(/\s+/g, ""),
+        totalPrice: totals.total, // Total Price including VAT/Tax
       };
 
-      const res = await axios.post(`${API_BASE}/api/orders`, payload, {
-        timeout: 10000,
+      // Create Order
+      // FIX: Use API_URL_BASE
+      const { data: order } = await axios.post(
+        `${API_URL_BASE}/orders`,
+        orderPayload
+      );
+      const newOrderId = order._id;
+      setOrderId(newOrderId); // Store the ID for socket listener
+
+      // 2. Initiate STK Push
+      // FIX: Use API_URL_BASE
+      await axios.post(`${API_URL_BASE}/mpesa/stkpush`, {
+        phone: orderPayload.customerPhone,
+        amount: totals.total,
+        orderId: newOrderId,
       });
 
-      const { orderId: newOrderId } = res.data || {};
-      setOrderId(newOrderId || null);
-
+      // Now we wait for socket update...
       setMessage("STK push sent. Confirm on your phone.");
-      // Keep status as 'processing' until socket tells us it's paid/failed
     } catch (err) {
       console.error(
         "Payment init error:",
-        err?.response || err?.message || err
+        err?.response?.data || err?.message || err
       );
-      setStatus("browsing");
-      setMessage("Failed to initiate payment. Try again.");
+      setStatus("failed");
+      setMessage("Payment failed to initiate. Please try again.");
     }
-  }, [phone, cart, table, totals]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phone, cart, table, totals]); // Add totals to deps
 
   // Small UI: skeleton while loading
   if (loading) {
@@ -214,14 +245,14 @@ export default function Menu() {
             <div className="text-2xl">🍽️</div>
             <div>
               <h1 className="text-lg font-semibold leading-tight">
-                Restaurant Menu
+                FLEVANEST Menu
               </h1>
               <p className="text-xs text-gray-500">Scan, order, pay — easy.</p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            <span className="px-3 py-1 rounded-full bg-gray-100 text-sm font-medium">
+            <span className="px-3 py-1 rounded-full bg-orange-100 text-orange-800 text-sm font-medium">
               Table {table}
             </span>
             <button
@@ -247,7 +278,9 @@ export default function Menu() {
                 ? "bg-yellow-50 text-yellow-800"
                 : status === "paid"
                 ? "bg-green-50 text-green-800"
-                : "bg-red-50 text-red-800"
+                : status === "failed"
+                ? "bg-red-50 text-red-800"
+                : "hidden"
             )}
             role="status"
             aria-live="polite"
@@ -271,6 +304,7 @@ export default function Menu() {
             >
               <div className="w-28 h-28 flex-shrink-0 rounded-lg overflow-hidden bg-gray-100">
                 {item.image ? (
+                  // Assuming item.image holds a valid URL
                   <img
                     src={item.image}
                     alt={item.name}
@@ -341,7 +375,7 @@ export default function Menu() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold">Your Order</h2>
               <span className="text-sm text-gray-500">
-                {cart.length} item(s)
+                {cart.reduce((total, item) => total + item.quantity, 0)} item(s)
               </span>
             </div>
 
@@ -424,18 +458,28 @@ export default function Menu() {
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     className="w-full border px-3 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-green-200"
+                    disabled={status === "processing" || status === "paid"}
                   />
                 </div>
 
                 <div className="mt-3 grid gap-2">
                   <button
                     onClick={handlePay}
-                    disabled={status === "processing"}
+                    disabled={
+                      status === "processing" ||
+                      status === "paid" ||
+                      cart.length === 0 ||
+                      !isKenyanPhone(phone)
+                    }
                     className={clsx(
                       "w-full py-3 rounded-lg text-white font-semibold transition",
                       status === "processing"
                         ? "bg-gray-400 cursor-wait"
-                        : "bg-green-600 hover:bg-green-700"
+                        : "bg-green-600 hover:bg-green-700",
+                      (status === "paid" ||
+                        cart.length === 0 ||
+                        !isKenyanPhone(phone)) &&
+                        "opacity-50 cursor-not-allowed"
                     )}
                   >
                     {status === "processing"
@@ -452,7 +496,8 @@ export default function Menu() {
                       setStatus("browsing");
                       setMessage(null);
                     }}
-                    className="w-full py-2 rounded-lg border text-sm"
+                    className="w-full py-2 rounded-lg border text-sm hover:bg-gray-100"
+                    disabled={status === "processing"}
                   >
                     Clear Order
                   </button>
@@ -465,15 +510,19 @@ export default function Menu() {
           {status === "paid" && orderId && (
             <div className="mt-3 p-3 bg-green-50 rounded-md text-sm">
               <div className="font-semibold text-green-800">
-                Payment Successful
+                Payment Successful 🎉
               </div>
               <div className="text-gray-700 mt-1">
                 We are preparing your order.{" "}
                 <a
-                  href={`${API_BASE}/api/orders/${orderId}/receipt`}
+                  // FIX: Use API_URL_BASE for receipt download
+                  href={`${API_URL_BASE.replace(
+                    "/api",
+                    ""
+                  )}/api/orders/${orderId}/receipt`}
                   target="_blank"
                   rel="noreferrer"
-                  className="underline text-green-700"
+                  className="underline text-green-700 font-medium"
                 >
                   Download receipt
                 </a>

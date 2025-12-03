@@ -4,12 +4,17 @@ import { CartProvider } from "./context/CartContext";
 import { SocketProvider } from "./context/SocketContext";
 import { AuthProvider } from "./context/AuthContext";
 
-import Navbar from "./components/Navbar";
+// Components
+import Navbar from "./components/common/Navbar.jsx";
+import Footer from "./components/Footer";
 import ProtectedRoute from "./components/ProtectedRoute";
+import CustomerMenu from "./components/Menu"; // Renamed the old Menu component to CustomerMenu for clarity
 
-import Menu from "./pages/Menu";
+// Pages
+import Home from "./pages/customer/Home"; // New Home Page
 import Checkout from "./pages/Checkout";
 import AdminDashboard from "./pages/AdminDashboard";
+import KitchenDashboard from "./pages/KitchenDashboard"; // Use the existing KitchenDashboard
 import Login from "./pages/Login";
 
 function App() {
@@ -18,19 +23,29 @@ function App() {
       <AuthProvider>
         <CartProvider>
           <BrowserRouter>
+            {/* Navbar is outside the main content flow, but inside the Router */}
             <Navbar />
-            <Routes>
-              {/* Public Routes */}
-              <Route path="/" element={<Menu />} />
-              <Route path="/menu" element={<Menu />} />
-              <Route path="/checkout" element={<Checkout />} />
-              <Route path="/login" element={<Login />} />
+            <main className="min-h-[80vh]">
+              {" "}
+              {/* Added min-height for structure */}
+              <Routes>
+                {/* Public Informative Routes */}
+                <Route path="/" element={<Home />} />
 
-              {/* Protected Admin Routes */}
-              <Route element={<ProtectedRoute />}>
-                <Route path="/admin" element={<AdminDashboard />} />
-              </Route>
-            </Routes>
+                {/* QR Code / Customer Ordering Routes */}
+                {/* The main menu page the customer sees. It handles the QR code query param. */}
+                <Route path="/menu" element={<CustomerMenu />} />
+                <Route path="/checkout" element={<Checkout />} />
+                <Route path="/login" element={<Login />} />
+
+                {/* Protected Staff Routes */}
+                <Route element={<ProtectedRoute />}>
+                  <Route path="/admin" element={<AdminDashboard />} />
+                  <Route path="/kitchen" element={<KitchenDashboard />} />
+                </Route>
+              </Routes>
+            </main>
+            <Footer /> {/* New Footer component */}
           </BrowserRouter>
         </CartProvider>
       </AuthProvider>

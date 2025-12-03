@@ -84,7 +84,7 @@ const AdminDashboard = () => {
           <div className="text-center">
             {/* FIX: Use QRCodeCanvas instead of QRCode */}
             <QRCodeCanvas
-              value="http://localhost:5173/menu?table=1"
+              value="http://192.168.62.45:5173/menu?table=1"
               size={128}
             />
             <p>Table 1</p>
@@ -92,7 +92,7 @@ const AdminDashboard = () => {
           <div className="text-center">
             {/* FIX: Use QRCodeCanvas instead of QRCode */}
             <QRCodeCanvas
-              value="http://localhost:5173/menu?table=2"
+              value="http://192.168.62.45:5173/menu?table=2"
               size={128}
             />
             <p>Table 2</p>
